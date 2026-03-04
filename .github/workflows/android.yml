@@ -1,0 +1,186 @@
+name: Build APK
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up JDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Create Android Project
+        run: |
+          mkdir MediaOCR
+          cd MediaOCR
+          
+          echo "rootProject.name='MediaOCR'" > settings.gradle
+          
+          mkdir -p app/src/main/java/com/example/mediaocr
+          mkdir -p app/src/main/res/layout
+          
+          cat <<EOF > build.gradle
+          buildscript {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              dependencies {
+                  classpath 'com.android.tools.build:gradle:8.2.0'
+              }
+          }
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          EOF
+          
+          cat <<EOF > app/build.gradle
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.mediaocr'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.mediaocr"
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              buildTypes {
+                  release {
+                      minifyEnabled false
+                  }
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'com.google.mlkit:text-recognition:16.0.0'
+          }
+          EOF
+
+          cat <<EOF > app/src/main/AndroidManifest.xml
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.CAMERA"/>
+              <application
+                  android:allowBackup="true"
+                  android:label="Media OCR"
+                  android:theme="@style/Theme.AppCompat.Light.DarkActionBar">
+                  <activity android:name=".MainActivity">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat <<EOF > app/src/main/java/com/example/mediaocr/MainActivity.kt
+          package com.example.mediaocr
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.graphics.Bitmap
+          import android.os.Bundle
+          import android.provider.MediaStore
+          import android.widget.Button
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+          import com.google.mlkit.vision.common.InputImage
+          import com.google.mlkit.vision.text.TextRecognition
+          import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+
+          class MainActivity : AppCompatActivity() {
+
+              private val REQUEST_IMAGE_CAPTURE = 1
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val layout = LinearLayout(this)
+                  layout.orientation = LinearLayout.VERTICAL
+                  layout.setPadding(40,40,40,40)
+
+                  val button = Button(this)
+                  button.text = "Scatta Foto"
+
+                  val textView = TextView(this)
+                  textView.textSize = 20f
+
+                  layout.addView(button)
+                  layout.addView(textView)
+
+                  setContentView(layout)
+
+                  button.setOnClickListener {
+                      val intent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                      startActivityForResult(intent, REQUEST_IMAGE_CAPTURE)
+                  }
+              }
+
+              override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+                  super.onActivityResult(requestCode, resultCode, data)
+
+                  if (requestCode == REQUEST_IMAGE_CAPTURE && resultCode == Activity.RESULT_OK) {
+                      val imageBitmap = data?.extras?.get("data") as Bitmap
+                      recognizeText(imageBitmap)
+                  }
+              }
+
+              private fun recognizeText(bitmap: Bitmap) {
+                  val image = InputImage.fromBitmap(bitmap, 0)
+                  val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+                  recognizer.process(image)
+                      .addOnSuccessListener { visionText ->
+                          val numbers = Regex("\\d+").findAll(visionText.text)
+                              .map { it.value.toDouble() }
+                              .toList()
+
+                          if (numbers.isNotEmpty()) {
+                              val average = numbers.sum() / numbers.size
+                              runOnUiThread {
+                                  (findViewById<LinearLayout>(android.R.id.content).getChildAt(0) as LinearLayout)
+                                      .getChildAt(1)
+                                      .let { (it as TextView).text = "Media: $average" }
+                              }
+                          }
+                      }
+              }
+          }
+          EOF
+
+      - name: Install Gradle
+        run: sudo apt-get install gradle -y
+
+      - name: Build APK
+        run: |
+          cd MediaOCR
+          gradle assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: MediaOCR-APK
+          path: MediaOCR/app/build/outputs/apk/debug/app-debug.apk
